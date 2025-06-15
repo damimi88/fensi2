@@ -1,6 +1,6 @@
 // ======= 远程关键词配置 =======
 const WORKER_ORIGIN = 'https://fensi.hhf505230.workers.dev';
-const remoteConfigUrl = `${WORKER_ORIGIN}/config.json`;
+const remoteConfigUrl = `${WORKER_ORIGIN}/gjc.json`;
 
 // ======= 工具函数 =======
 async function loadKeywordConfig() {
@@ -8,7 +8,7 @@ async function loadKeywordConfig() {
     headers: { Origin: 'https://bsky.app' }
   });
   if (!res.ok) {
-    throw new Error(`❌ 无法加载配置文件：HTTP ${res.status}`);
+    throw new Error(`❌ 无法加载关键词配置文件：HTTP ${res.status}`);
   }
   return await res.json();
 }
@@ -35,7 +35,12 @@ function normalize(text) {
 // ======= 本地用户缓存 =======
 const localCacheKey = 'bsky_user_cache_v1';
 const maxCacheSize = 10000;
-let userCache = JSON.parse(localStorage.getItem(localCacheKey) || '[]');
+let userCache;
+try {
+  userCache = JSON.parse(localStorage.getItem(localCacheKey)) || [];
+} catch {
+  userCache = [];
+}
 let processedUsers = new Set(userCache);
 
 function saveToCache(username) {
@@ -154,8 +159,6 @@ async function handleCard(card) {
 
   } catch (err) {
     console.error('🚨 handleCard 错误，配置加载或脚本执行失败', err);
-    // 加载配置失败时可选择暂停脚本
-    // isPaused = true;
   } finally {
     processingCount--;
   }
