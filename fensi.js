@@ -1,41 +1,48 @@
-// ======= 配置拉取 =======
-let keywordConfig = null;
-async function loadKeywordConfig() {
-  if (keywordConfig) return keywordConfig;
-  const res = await fetch("https://你的worker子域名.workers.dev/config.json");
-  if (!res.ok) throw new Error("❌ 无法加载配置文件");
-  keywordConfig = await res.json();
-  return keywordConfig;
-}
+// ======= 远程关键词配置 =======
+const WORKER_ORIGIN = 'https://fensi.hhf505230.workers.dev';
+const remoteConfigUrl = `${WORKER_ORIGIN}/config.json`;
 
 // ======= 工具函数 =======
+async function loadKeywordConfig() {
+  const res = await fetch(remoteConfigUrl, {
+    headers: { Origin: 'https://bsky.app' }
+  });
+  if (!res.ok) {
+    throw new Error(`❌ 无法加载配置文件：HTTP ${res.status}`);
+  }
+  return await res.json();
+}
+
 function matchWholeWord(text, keywords) {
   const lower = text.toLowerCase();
-  return keywords.some(w => new RegExp(`\\b${w}\\b`, "i").test(lower));
+  return keywords.some(w => new RegExp(`\\b${w}\\b`, 'i').test(lower));
 }
+
 function matchSubstring(text, keywords) {
   const lower = text.toLowerCase();
   return keywords.some(w => lower.includes(w.toLowerCase()));
 }
+
 function extractUsername(text) {
-  const match = text.match(/@([\w\-\.]+)\.bsky\.social/);
-  return match ? match[1].toLowerCase() : "";
+  const m = text.match(/@([\w\-.]+)\.bsky\.social/);
+  return m ? m[1].toLowerCase() : '';
 }
+
 function normalize(text) {
   return text.toLowerCase().trim();
 }
 
-// ======= 缓存设置 =======
-const localCacheKey = "bsky_user_cache_v1";
+// ======= 本地用户缓存 =======
+const localCacheKey = 'bsky_user_cache_v1';
 const maxCacheSize = 10000;
-let userCache = JSON.parse(localStorage.getItem(localCacheKey) || "[]");
+let userCache = JSON.parse(localStorage.getItem(localCacheKey) || '[]');
 let processedUsers = new Set(userCache);
 
 function saveToCache(username) {
   if (!processedUsers.has(username)) {
     userCache.push(username);
     if (userCache.length > maxCacheSize) {
-      userCache = userCache.slice(userCache.length - maxCacheSize);
+      userCache = userCache.slice(-maxCacheSize);
     }
     processedUsers = new Set(userCache);
     localStorage.setItem(localCacheKey, JSON.stringify(userCache));
@@ -64,29 +71,38 @@ async function getProfileData(handle) {
 
 // ======= 卡片处理逻辑 =======
 async function handleCard(card) {
+  if (card.dataset.processed || isPaused || processingCount >= maxConcurrent) return;
+  processingCount++;
+  card.dataset.processed = 'true';
+
   try {
-    if (card.dataset.processed || isPaused || processingCount >= maxConcurrent) return;
-
+    // 每次强制加载最新配置
+    const cfg = await loadKeywordConfig();
     const {
-      blockedNameKeywords,
-      blockedGeneralKeywords,
-      targetNameKeywords,
-      targetGeneralKeywords
-    } = await loadKeywordConfig();
+      blockedNameKeywords = [],
+      blockedGeneralKeywords = [],
+      targetNameKeywords = [],
+      targetGeneralKeywords = [],
+      paused = false
+    } = cfg;
 
-    const cardText = card.innerText;
-    if (!cardText || cardText.length < 10) return;
+    // 如果配置要求暂停，则停止脚本
+    isPaused = paused;
+    if (isPaused) return;
 
-    const nickMatch = cardText.match(/^(.*?)\n@/);
-    const nickname = nickMatch ? normalize(nickMatch[1]) : "";
-    const username = extractUsername(cardText);
-    const bioText = cardText.replace(nickMatch?.[0] || "", "").replace(/@\w+\.bsky\.social/, "").trim();
+    const text = card.innerText || '';
+    if (text.length < 10) return;
+
+    const nickMatch = text.match(/^(.*?)\n@/);
+    const nickname = nickMatch ? normalize(nickMatch[1]) : '';
+    const username = extractUsername(text);
+    const bioText = text.replace(nickMatch?.[0] || '', '')
+                        .replace(/@\w+\.bsky\.social/, '')
+                        .trim();
     const hasBio = bioText.length > 0;
 
     if (!username || processedUsers.has(username)) return;
-    card.dataset.processed = "true";
     saveToCache(username);
-    processingCount++;
 
     // 屏蔽规则
     if (
@@ -98,7 +114,7 @@ async function handleCard(card) {
       return;
     }
 
-    // 命中关键词
+    // 白名单匹配
     let matched = false;
     if (hasBio) {
       matched =
@@ -112,29 +128,34 @@ async function handleCard(card) {
         matchSubstring(nickname, targetGeneralKeywords) ||
         matchSubstring(username, targetGeneralKeywords);
     }
-
     if (!matched) {
       console.log(`🟤 Skipped: ${nickname} (${username})`);
       return;
     }
 
-    // 请求资料
-    const fullHandle = username.includes(".") ? username : `${username}.bsky.social`;
+    // 获取资料并判断粉丝数
+    const fullHandle = username.includes('.')
+      ? username
+      : `${username}.bsky.social`;
     const profile = await getProfileData(fullHandle);
     if (!profile) return;
-
     const { followersCount = 0, followsCount = 0 } = profile;
+
     if (followersCount < 500 && followsCount < 500) {
-      card._followBtn = card._followBtn || card.querySelector('button[aria-label="Follow"], button[aria-label="关注"]');
-      if (card._followBtn) {
-        followQueue.push({ btn: card._followBtn, card });
+      const btn = card._followBtn ||
+        card.querySelector('button[aria-label="Follow"], button[aria-label="关注"]');
+      if (btn) {
+        followQueue.push({ btn, card });
         console.log(`🔜 Enqueued follow: ${nickname} (${username})`);
       }
     } else {
       console.log(`⛔️ Skipped (粉丝过多): ${nickname} (${username})`);
     }
+
   } catch (err) {
-    console.error("🚨 handleCard 错误", err);
+    console.error('🚨 handleCard 错误，配置加载或脚本执行失败', err);
+    // 加载配置失败时可选择暂停脚本
+    // isPaused = true;
   } finally {
     processingCount--;
   }
@@ -146,25 +167,26 @@ async function dequeueFollow() {
     setTimeout(dequeueFollow, 500);
     return;
   }
-
   const { btn } = followQueue.shift();
   try {
     btn.click();
     followCount++;
     counterBox.innerText = `✅ Followed: ${followCount}`;
-    console.log(`✅ Followed`);
+    console.log('✅ Followed');
   } catch (e) {
-    console.warn("⚠️ Follow failed", e);
+    console.warn('⚠️ Follow failed', e);
   } finally {
     dequeueFollow();
   }
 }
 dequeueFollow();
 
-// ======= 主处理入口 =======
+// ======= 主处理入口 & 监听 =======
 function processAllCards() {
   if (isPaused) return;
-  const cards = Array.from(document.querySelectorAll('div[style*="padding"][style*="border-top-width"]'));
+  const cards = Array.from(
+    document.querySelectorAll('div[style*="padding"][style*="border-top-width"]')
+  );
   for (const card of cards) {
     if (processingCount < maxConcurrent) {
       handleCard(card);
@@ -172,48 +194,46 @@ function processAllCards() {
   }
 }
 
-// ======= 页面变动监听 =======
 const observer = new MutationObserver(() => {
   if (!isPaused) processAllCards();
 });
 observer.observe(document.body, { childList: true, subtree: true });
 
-// ======= 自动滚动到底部（每秒）=======
+// ======= 自动滚动到底部 =======
 setInterval(() => {
   if (!isPaused) {
-    window.scrollTo({ top: document.body.scrollHeight, behavior: "smooth" });
+    window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' });
   }
 }, 1000);
 
-// ======= UI 状态框 =======
-const counterBox = document.createElement("div");
+// ======= UI 状态框 & 快捷键 =======
+const counterBox = document.createElement('div');
 Object.assign(counterBox.style, {
-  position: "fixed", bottom: "20px", right: "20px",
-  backgroundColor: "#222", color: "#0f0", padding: "10px 15px",
-  borderRadius: "8px", fontSize: "14px", zIndex: "9999",
-  boxShadow: "0 0 8px rgba(0,0,0,0.5)", display: "none"
+  position: 'fixed', bottom: '20px', right: '20px',
+  backgroundColor: '#222', color: '#0f0', padding: '10px 15px',
+  borderRadius: '8px', fontSize: '14px', zIndex: '9999',
+  boxShadow: '0 0 8px rgba(0,0,0,0.5)', display: 'none'
 });
 counterBox.innerText = `✅ Followed: 0`;
 document.body.appendChild(counterBox);
 
-// ======= 快捷键控制（R 启动 / Q 暂停 / C 清除缓存）=======
-alert("🟡 自动关注就绪：R 启动，Q 暂停，C 清缓存");
-document.addEventListener("keydown", (e) => {
+alert('🟡 自动关注就绪：按 R 启动，按 Q 暂停，按 C 清缓存');
+document.addEventListener('keydown', e => {
   const key = e.key.toLowerCase();
-  if (key === "q") {
+  if (key === 'q') {
     isPaused = true;
-    counterBox.style.display = "none";
-    console.log("⏸ 已暂停自动关注");
-  } else if (key === "r") {
+    counterBox.style.display = 'none';
+    console.log('⏸ 已暂停自动关注');
+  } else if (key === 'r') {
     isPaused = false;
-    counterBox.style.display = "block";
-    console.log("▶️ 已恢复自动关注");
+    counterBox.style.display = 'block';
+    console.log('▶️ 已恢复自动关注');
     processAllCards();
-  } else if (key === "c") {
+  } else if (key === 'c') {
     localStorage.removeItem(localCacheKey);
     userCache = [];
     processedUsers = new Set();
-    alert("🧹 缓存已清除！");
-    console.log("✅ 本地缓存清除成功");
+    alert('🧹 缓存已清除！');
+    console.log('✅ 本地缓存清除成功');
   }
 });
