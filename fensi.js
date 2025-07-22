@@ -169,11 +169,16 @@ const observer = new MutationObserver(() => {
 });
 observer.observe(document.body, { childList: true, subtree: true });
 
-setInterval(() => {
-  if (!isPaused) {
-    window.scrollTo({ top: document.body.scrollHeight, behavior: "smooth" });
+// 用requestAnimationFrame持续滚动到底部
+(function keepScrollBottom() {
+  function scrollToBottom() {
+    if (!isPaused) {
+      window.scrollTo(0, document.body.scrollHeight);
+    }
+    requestAnimationFrame(scrollToBottom);
   }
-}, 1000);
+  scrollToBottom();
+})();
 
 const counterBox = document.createElement("div");
 Object.assign(counterBox.style, {
