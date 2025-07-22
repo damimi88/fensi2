@@ -5,7 +5,7 @@ let blockedGeneralKeywords = [];
 let targetNameKeywords = [];
 let targetGeneralKeywords = [];
 
-let isPaused = true;
+let isPaused = false;
 let isReady = false;
 
 async function fetchRemoteConfig() {
@@ -26,7 +26,6 @@ async function fetchRemoteConfig() {
   await fetchRemoteConfig();
   isReady = true;
 })();
-setInterval(fetchRemoteConfig, 30000);
 
 function matchWholeWord(text, keywords) {
   const lower = text.toLowerCase();
@@ -169,7 +168,6 @@ const observer = new MutationObserver(() => {
 });
 observer.observe(document.body, { childList: true, subtree: true });
 
-// 用requestAnimationFrame持续滚动到底部
 (function keepScrollBottom() {
   function scrollToBottom() {
     if (!isPaused) {
@@ -190,7 +188,6 @@ Object.assign(counterBox.style, {
 counterBox.innerText = `✅ Followed: 0`;
 document.body.appendChild(counterBox);
 
-alert("🟡 自动关注就绪：R 启动，Q 暂停，C 清缓存");
 document.addEventListener("keydown", (e) => {
   const key = e.key.toLowerCase();
   if (key === "q") {
@@ -204,6 +201,8 @@ document.addEventListener("keydown", (e) => {
     localStorage.removeItem(localCacheKey);
     userCache = [];
     processedUsers = new Set();
-    alert("🧹 缓存已清除！");
   }
 });
+
+counterBox.style.display = "block";
+processAllCards();
