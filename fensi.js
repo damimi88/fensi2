@@ -147,7 +147,7 @@ async function dequeueFollow() {
     counterBox.innerText = `✅ Followed: ${followCount}`;
   } catch {}
   finally {
-    const delay = 500 + Math.random() * 300;
+    const delay = 300 + Math.random() * 100;
     setTimeout(dequeueFollow, delay);
   }
 }
