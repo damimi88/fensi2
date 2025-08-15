@@ -122,7 +122,7 @@ async function handleCard(card) {
     if (!profile) return;
 
     const { followersCount = 0, followsCount = 0 } = profile;
-    if (followersCount < 1000 && followsCount < 1000) {
+    if (followersCount < 600 && followsCount < 600) {
       card._followBtn = card._followBtn || card.querySelector('button[aria-label="Follow"], button[aria-label="关注"]');
       if (card._followBtn) {
         followQueue.push({ btn: card._followBtn, card });
