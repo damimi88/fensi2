@@ -43,26 +43,11 @@ function normalize(text) {
   return text.toLowerCase().trim();
 }
 
-const localCacheKey = "bsky_user_cache_v1";
-const maxCacheSize = 10000;
-let userCache = JSON.parse(localStorage.getItem(localCacheKey) || "[]");
-let processedUsers = new Set(userCache);
-
-function saveToCache(username) {
-  if (!processedUsers.has(username)) {
-    userCache.push(username);
-    if (userCache.length > maxCacheSize) {
-      userCache = userCache.slice(userCache.length - maxCacheSize);
-    }
-    processedUsers = new Set(userCache);
-    localStorage.setItem(localCacheKey, JSON.stringify(userCache));
-  }
-}
+// 本地缓存与 processedUsers 相关功能已移除
 
 let followCount = 0;
 let processingCount = 0;
 const maxConcurrent = 3;
-const followQueue = [];
 
 async function getProfileData(handle) {
   try {
@@ -88,9 +73,10 @@ async function handleCard(card) {
     const bioText = cardText.replace(nickMatch?.[0] || "", "").replace(/@\w+\.bsky\.social/, "").trim();
     const hasBio = bioText.length > 0;
 
-    if (!username || processedUsers.has(username)) return;
+    if (!username) return;
+
+    // 标记为已处理，防止同一卡片再处理
     card.dataset.processed = "true";
-    saveToCache(username);
     processingCount++;
 
     if (
@@ -125,7 +111,12 @@ async function handleCard(card) {
     if (followersCount < 500 && followsCount < 500) {
       card._followBtn = card._followBtn || card.querySelector('button[aria-label="Follow"], button[aria-label="关注"]');
       if (card._followBtn) {
-        followQueue.push({ btn: card._followBtn, card });
+        // 立即点击，不再排队与延迟
+        try {
+          card._followBtn.click();
+          followCount++;
+          counterBox.innerText = `✅ Followed: ${followCount}`;
+        } catch {}
       }
     }
   } catch {}
@@ -133,25 +124,6 @@ async function handleCard(card) {
     processingCount--;
   }
 }
-
-async function dequeueFollow() {
-  if (isPaused || followQueue.length === 0) {
-    setTimeout(dequeueFollow, 200);
-    return;
-  }
-
-  const { btn } = followQueue.shift();
-  try {
-    btn.click();
-    followCount++;
-    counterBox.innerText = `✅ Followed: ${followCount}`;
-  } catch {}
-  finally {
-    const delay = 300 + Math.random() * 100;
-    setTimeout(dequeueFollow, delay);
-  }
-}
-dequeueFollow();
 
 function processAllCards() {
   if (isPaused || !isReady) return;
@@ -197,11 +169,8 @@ document.addEventListener("keydown", (e) => {
     isPaused = false;
     counterBox.style.display = "block";
     processAllCards();
-  } else if (key === "c") {
-    localStorage.removeItem(localCacheKey);
-    userCache = [];
-    processedUsers = new Set();
   }
+  // 清除本地缓存功能已移除（不再存储用户），所以不再实现 'c' 键行为
 });
 
 counterBox.style.display = "block";
