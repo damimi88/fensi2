@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Twitter/X 用户卡片自动显示粉丝数&关注数&简介 (批量自动版 - 2025兼容)
 // @namespace    http://tampermonkey.net/
-// @version      2.32.12
-// @description  在 Twitter/X 的各种页面上（包括评论区和关注列表），自动加载并在所有可见用户卡片内显示粉丝数、关注数、个人简介（GraphQL批量查询 - 自动提取哈希，兼容2025年10月，数据插入评论文本下方新行或列表 bio 下方，修复插入点未找到问题）
+// @version      2.32.15
+// @description  在 Twitter/X 的各种页面上（包括评论区和关注列表），自动加载并在所有可见用户卡片内显示粉丝数、关注数、个人简介（GraphQL批量查询 - 自动提取哈希，兼容2025年10月，数据插入评论文本下方新行或列表 bio 下方，修复插入点未找到问题，优化API请求并行处理与限流，支持视图可见性动态显示/隐藏）
 // @author       You
 // @match        https://x.com/*
 // @match        https://twitter.com/*
@@ -141,7 +141,7 @@
   }
 
   // 定义黑名单
-  const femaleNamesBlacklist = [
+  const femaleNamesBlacklist = new Set([
     "ada", "addison", "adele", "adeline", "adriana", "adrienne", "agatha", "agnes", "aileen", "aisha",
     "alaina", "alana", "alayna", "alex", "alexandra", "alexandria", "alexis", "alice", "alicia", "alina",
     "alison", "alivia", "allison", "alondra", "alix", "alyvia", "amanda", "amber", "amelia", "amara",
@@ -222,7 +222,7 @@
     "vivian", "viviana", "wanda", "whitney", "willow", "winnie", "xena", "xiomara", "yadira", "yamileth",
     "yareli", "yaretzi", "yasmin", "yeardley", "yesenia", "yolanda", "yvette", "yvonne", "zahra", "zaria",
     "zariah", "zoe", "zoey"
-  ];
+  ]);
 
   // 从DOM元素提取用户信息 - 优化支持评论区和列表用户卡片
   function extractUserInfo(element) {
@@ -309,24 +309,27 @@
   function isFemaleNameBlacklisted(name, screenName) {
     const lowerName = (name || '').toLowerCase();
     const lowerScreen = (screenName || '').toLowerCase();
-    return femaleNamesBlacklist.some(item => lowerName.includes(item) || lowerScreen.includes(item));
+    return Array.from(femaleNamesBlacklist).some(item => lowerName.includes(item) || lowerScreen.includes(item));
   }
 
   // 检查是否匹配粉丝/关注数条件
   function shouldDisplayUserInfo(userInfo, screenName) {
     if (!userInfo || userInfo.followersCount === undefined || userInfo.friendsCount === undefined) {
       console.log(`🚫 ${screenName}: 数据无效或缺失`);
-      return false;
+      return { shouldDisplay: false, reason: '数据无效' };
     }
 
-    const isBigV = userInfo.followersCount >= 1000 || userInfo.friendsCount >= 1000;
-
-    if (isBigV) {
+    if (userInfo.followersCount >= 1000 || userInfo.friendsCount >= 1000) {
       console.log(`🚫 ${screenName}: 大V账户 (粉丝:${userInfo.followersCount}, 关注:${userInfo.friendsCount})`);
-      return false;
+      return { shouldDisplay: false, reason: '大V账户' };
     }
 
-    return true;
+    if (userInfo.followersCount > userInfo.friendsCount) {
+      console.log(`🚫 ${screenName}: 粉丝数量超过关注数量 (粉丝:${userInfo.followersCount}, 关注:${userInfo.friendsCount})`);
+      return { shouldDisplay: false, reason: '狗推较多' };
+    }
+
+    return { shouldDisplay: true, reason: '' };
   }
 
   // 创建过滤原因提示
@@ -342,7 +345,7 @@
     displayDiv.style.lineHeight = '1.1';
     displayDiv.style.fontFamily = "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif";
     displayDiv.style.fontWeight = 'bold';
-    displayDiv.textContent = reason;
+    displayDiv.textContent = `🚫 ${reason}`;
 
     let contentContainer = cardElement.querySelector('[data-testid="tweetText"]')?.parentNode ||
                           cardElement.querySelector('[data-testid="UserDescription"]')?.parentNode ||
@@ -652,29 +655,28 @@
     }
   }
 
-  // 批量获取多个用户信息
+  // 批量获取多个用户信息 - 优化为并行处理与限流
   async function getUsersInfoFromAPI(screenNames) {
     console.log(`🚀 开始批量查询 ${screenNames.length} 个用户...`);
     const results = {};
-    const BATCH_SIZE = 5;
-    const BATCH_DELAY = 1000;
+    const BATCH_SIZE = 5; // 每批5个请求
+    const BATCH_DELAY = 1000; // 批次间延迟1秒，避免速率限制
 
     for (let i = 0; i < screenNames.length; i += BATCH_SIZE) {
       const batch = screenNames.slice(i, i + BATCH_SIZE);
       console.log(`📦 处理批次 ${Math.floor(i / BATCH_SIZE) + 1}: ${batch.join(", ")}`);
 
-      const promises = batch.map(async (screenName, idx) => {
-        await new Promise((resolve) => setTimeout(resolve, idx * 200));
+      const promises = batch.map(async (screenName) => {
         return { screenName, info: await getUserInfoFromAPI(screenName) };
       });
 
       const batchResults = await Promise.allSettled(promises);
-      batchResults.forEach((result, idx) => {
+      batchResults.forEach((result) => {
         if (result.status === "fulfilled") {
           const { screenName, info } = result.value;
           results[screenName] = info;
         } else {
-          console.log(`⚠️ 批次查询异常失败: ${batch[idx]}`);
+          console.log(`⚠️ 查询失败: ${result.reason}`);
         }
       });
 
@@ -683,7 +685,7 @@
       }
     }
 
-    console.log(`✅ 批量查询完成: 成功 ${Object.keys(results).filter(k => !results[k].error).length}/${screenNames.length}`);
+    console.log(`✅ 批量查询完成: 成功 ${Object.keys(results).filter(k => !results[k]?.error).length}/${screenNames.length}`);
     return results;
   }
 
@@ -833,7 +835,7 @@
     }
 
     console.log(
-      "🚀 用户卡片自动显示脚本已启动 (GraphQL批量自动版 v2.32.12 - 兼容2025年10月，支持过滤原因显示，优化翻译插件兼容)"
+      "🚀 用户卡片自动显示脚本已启动 (GraphQL批量自动版 v2.32.15 - 兼容2025年10月，支持过滤原因显示，优化翻译插件兼容，API请求并行处理与限流，支持视图可见性动态显示/隐藏)"
     );
 
     let isProcessing = false;
@@ -848,7 +850,9 @@
       'div[role="article"]',
     ];
 
-    async function processVisibleCards() {
+    const observers = new Map(); // 存储每个卡片的IntersectionObserver
+
+    async function processVisibleCards(mutations) {
       const now = Date.now();
       if (isProcessing || now - lastProcessTime < 2000) {
         console.log(`⏸️ 节流跳过处理 (间隔: ${now - lastProcessTime}ms)`);
@@ -889,7 +893,7 @@
         if (info?.screenName && !getCache(info.screenName) && !screenNameSet.has(info.screenName)) {
           if (isFemaleNameBlacklisted(info.displayName, info.screenName)) {
             console.log(`👩 ${info.screenName}: 女性名字黑名单匹配`);
-            createFilterReasonDisplay(el, info.screenName, '👩 女性名字');
+            createFilterReasonDisplay(el, info.screenName, '女性名字');
           } else {
             screenNameSet.add(info.screenName);
           }
@@ -897,63 +901,74 @@
       });
       const uniqueScreenNames = Array.from(screenNameSet);
 
+      let batchResults = {};
       if (uniqueScreenNames.length > 0) {
-        const batchResults = await getUsersInfoFromAPI(uniqueScreenNames);
-
-        newElements.forEach((el) => {
-          const info = extractUserInfo(el);
-          if (info?.screenName) {
-            let userInfo = batchResults[info.screenName] || getCache(info.screenName);
-
-            if (userInfo && userInfo.error) {
-              // API错误情况
-              createFilterReasonDisplay(el, info.screenName, `❌ ${userInfo.error}`);
-            } else if (userInfo && shouldDisplayUserInfo(userInfo, info.screenName)) {
-              // 正常显示
-              el.detailedUserInfo = userInfo;
-              createCardDisplay(el, el.detailedUserInfo);
-              console.log(`✅ ${info.screenName}: 显示用户资料`);
-            } else if (userInfo) {
-              // 过滤原因已由shouldDisplayUserInfo记录在控制台
-              // 这里可以选择是否显示具体原因
-              const reason = userInfo.followersCount >= 1000 || userInfo.friendsCount >= 1000 ? '大V账户' : '关键词黑名单';
-              createFilterReasonDisplay(el, info.screenName, `🚫 ${reason}`);
-            } else {
-              console.log(`🚫 ${info.screenName}: 无有效数据`);
-            }
-          }
-        });
-      } else {
-        console.log(`📦 所有卡片数据已缓存或无效，跳过API调用`);
-        newElements.forEach((el) => {
-          const info = extractUserInfo(el);
-          if (info?.screenName) {
-            let userInfo = getCache(info.screenName);
-
-            if (userInfo && userInfo.error) {
-              createFilterReasonDisplay(el, info.screenName, `❌ ${userInfo.error}`);
-            } else if (userInfo && shouldDisplayUserInfo(userInfo, info.screenName)) {
-              el.detailedUserInfo = userInfo;
-              createCardDisplay(el, el.detailedUserInfo);
-              console.log(`✅ ${info.screenName}: 显示缓存用户资料`);
-            } else if (userInfo) {
-              const reason = userInfo.followersCount >= 1000 || userInfo.friendsCount >= 1000 ? '大V账户' : '关键词黑名单';
-              createFilterReasonDisplay(el, info.screenName, `🚫 ${reason}`);
-            } else {
-              console.log(`🚫 ${info.screenName}: 无缓存数据`);
-            }
-          }
-        });
+        batchResults = await getUsersInfoFromAPI(uniqueScreenNames);
       }
+
+      newElements.forEach((el) => {
+        const info = extractUserInfo(el);
+        if (info?.screenName) {
+          let userInfo = batchResults[info.screenName] || getCache(info.screenName);
+
+          if (userInfo && userInfo.error) {
+            createFilterReasonDisplay(el, info.screenName, userInfo.error);
+          } else if (userInfo) {
+            el.detailedUserInfo = userInfo;
+            // 不立即显示，使用IntersectionObserver控制
+            setupIntersectionObserver(el);
+          } else {
+            console.log(`🚫 ${info.screenName}: 无有效数据`);
+          }
+        }
+      });
 
       isProcessing = false;
       console.log(`✅ 自动批量处理完成: ${newElements.length} 个卡片`);
     }
 
-    const observer = new MutationObserver((mutations) => {
-      if (mutations.some((mutation) => mutation.addedNodes.length > 0)) {
-        setTimeout(processVisibleCards, 2000);
+    function setupIntersectionObserver(cardElement) {
+      if (observers.has(cardElement)) return;
+
+      const observer = new IntersectionObserver((entries) => {
+        entries.forEach((entry) => {
+          if (entry.isIntersecting) {
+            showUserInfo(cardElement);
+          } else {
+            hideUserInfo(cardElement);
+          }
+        });
+      }, { threshold: 0.1 });
+
+      observer.observe(cardElement);
+      observers.set(cardElement, observer);
+    }
+
+    function showUserInfo(cardElement) {
+      if (!cardElement.detailedUserInfo) return;
+
+      const checkResult = shouldDisplayUserInfo(cardElement.detailedUserInfo, cardElement.detailedUserInfo.screenName);
+      if (checkResult.shouldDisplay) {
+        createCardDisplay(cardElement, cardElement.detailedUserInfo);
+      } else {
+        createFilterReasonDisplay(cardElement, cardElement.detailedUserInfo.screenName, checkResult.reason);
       }
+    }
+
+    function hideUserInfo(cardElement) {
+      const display = cardElement.querySelector('[data-user-stats="display"], [data-filter-reason="display"]');
+      if (display) {
+        display.remove();
+      }
+      cardElement.dataset.uniqueDisplayId = ""; // 重置以允许重新显示
+    }
+
+    const observer = new MutationObserver((mutations) => {
+      // 忽略脚本自身添加的节点以避免无限循环
+      if (mutations.some(mutation => Array.from(mutation.addedNodes).some(node => node.matches && (node.matches('[data-user-stats="display"]') || node.matches('[data-filter-reason="display"]'))))) {
+        return;
+      }
+      setTimeout(processVisibleCards, 2000);
     });
 
     observer.observe(document.body, { childList: true, subtree: true });
@@ -968,7 +983,7 @@
   }
 
   console.log(
-    "🔧 用户卡片自动显示脚本已加载 (GraphQL批量自动版 v2.32.12 - 兼容2025年10月，支持过滤原因显示，优化翻译插件兼容)"
+    "🔧 用户卡片自动显示脚本已加载 (GraphQL批量自动版 v2.32.15 - 兼容2025年10月，支持过滤原因显示，优化翻译插件兼容，API请求并行处理与限流，支持视图可见性动态显示/隐藏)"
   );
 
   if (document.readyState === "loading") {
