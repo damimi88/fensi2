@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Twitter/X 用户卡片自动显示粉丝数&关注数&简介 (批量自动版 - 2025兼容)
 // @namespace    http://tampermonkey.net/
-// @version      2.32.15
-// @description  在 Twitter/X 的各种页面上（包括评论区和关注列表），自动加载并在所有可见用户卡片内显示粉丝数、关注数、个人简介（GraphQL批量查询 - 自动提取哈希，兼容2025年10月，数据插入评论文本下方新行或列表 bio 下方，修复插入点未找到问题，优化API请求并行处理与限流，支持视图可见性动态显示/隐藏）
+// @version      2.32.18
+// @description  在 Twitter/X 的各种页面上（包括评论区和关注列表），自动加载并在所有可见用户卡片内显示粉丝数、关注数、个人简介（GraphQL批量查询 - 自动提取哈希，兼容2025年10月，数据插入评论文本下方新行或列表 bio 下方，修复插入点未找到问题，优化API请求并行处理与限流，支持视图可见性动态显示/隐藏，添加圆形太极悬浮控制按钮）
 // @author       You
 // @match        https://x.com/*
 // @match        https://twitter.com/*
@@ -817,6 +817,163 @@
     }, 5000);
   }
 
+  // 新增：全局变量
+  let isScriptRunning = true;
+  let followClickCount = 0;
+  const CLICK_COUNT_KEY = 'x_follow_click_count';
+  const CLICK_DATE_KEY = 'x_follow_click_date';
+
+  // 新增：获取/更新今日点击计数
+  function getTodayClickCount() {
+    const today = new Date().toDateString();
+    const storedDate = localStorage.getItem(CLICK_DATE_KEY);
+    if (storedDate !== today) {
+      localStorage.setItem(CLICK_COUNT_KEY, '0');
+      localStorage.setItem(CLICK_DATE_KEY, today);
+      return 0;
+    }
+    return parseInt(localStorage.getItem(CLICK_COUNT_KEY) || '0', 10);
+  }
+
+  function incrementClickCount() {
+    followClickCount = getTodayClickCount() + 1;
+    localStorage.setItem(CLICK_COUNT_KEY, followClickCount.toString());
+    updateControlButton();
+  }
+
+  // 新增：监听follow按钮点击
+  function setupFollowClickListener() {
+    document.addEventListener('click', (e) => {
+      if (e.target.closest('[data-testid="userFollowButton"], [data-testid="userUnfollowButton"]')) {
+        incrementClickCount();
+      }
+    }, true);
+  }
+
+  // 新增：创建圆形太极悬浮控制按钮
+  function createControlButton() {
+    followClickCount = getTodayClickCount();
+
+    const controlDiv = document.createElement('div');
+    controlDiv.id = 'script-control-button';
+    controlDiv.style.position = 'fixed';
+    controlDiv.style.bottom = '20px';
+    controlDiv.style.right = '20px';
+    controlDiv.style.width = '75px';
+    controlDiv.style.height = '75px';
+    controlDiv.style.borderRadius = '50%';
+    controlDiv.style.overflow = 'hidden';
+    controlDiv.style.cursor = 'pointer';
+    controlDiv.style.userSelect = 'none';
+    controlDiv.style.boxShadow = '0 4px 20px rgba(0,0,0,0.3)';
+    controlDiv.style.zIndex = '10001';
+    controlDiv.style.display = 'flex';
+    controlDiv.style.flexDirection = 'column';
+    controlDiv.style.alignItems = 'center';
+    controlDiv.style.justifyContent = 'center';
+    controlDiv.style.backgroundColor = 'transparent';
+    controlDiv.style.transition = 'background-color 0.3s, transform 0.3s';
+
+    // 太极SVG
+    const taijiSvg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    taijiSvg.setAttribute('viewBox', '0 0 16 16');
+    taijiSvg.setAttribute('width', '100%');
+    taijiSvg.setAttribute('height', '100%');
+    taijiSvg.innerHTML = `
+      <path d="M9.167 4.5a1.167 1.167 0 1 1-2.334 0 1.167 1.167 0 0 1 2.334 0"/>
+      <path d="M8 0a8 8 0 1 0 0 16A8 8 0 0 0 8 0M1 8a7 7 0 0 1 7-7 3.5 3.5 0 1 1 0 7 3.5 3.5 0 1 0 0 7 7 7 0 0 1-7-7m7 4.667a1.167 1.167 0 1 1 0-2.334 1.167 1.167 0 0 1 0 2.334"/>
+    `;
+    taijiSvg.style.fill = 'black';
+    taijiSvg.style.animation = 'rotate 10s linear infinite';
+
+    // 添加CSS动画
+    const style = document.createElement('style');
+    style.textContent = `
+      @keyframes rotate {
+        from { transform: rotate(0deg); }
+        to { transform: rotate(360deg); }
+      }
+    `;
+    document.head.appendChild(style);
+
+    controlDiv.appendChild(taijiSvg);
+
+    document.body.appendChild(controlDiv);
+
+    // 更新动画状态
+    function updateAnimation() {
+      if (isScriptRunning) {
+        taijiSvg.style.animation = 'rotate 10s linear infinite';
+      } else {
+        taijiSvg.style.animation = 'none';
+      }
+    }
+    updateAnimation();
+
+    // hover效果
+    controlDiv.addEventListener('mouseenter', () => {
+      controlDiv.style.backgroundColor = 'rgba(0,0,0,0.1)';
+      controlDiv.style.transform = 'scale(1.1)';
+      if (isScriptRunning) {
+        taijiSvg.style.animationDuration = '2s';
+      }
+    });
+
+    controlDiv.addEventListener('mouseleave', () => {
+      controlDiv.style.backgroundColor = 'transparent';
+      controlDiv.style.transform = 'scale(1)';
+      if (isScriptRunning) {
+        taijiSvg.style.animationDuration = '10s';
+      }
+    });
+
+    // 使按钮可拖动
+    let isDragging = false;
+    let dragged = false;
+    let startX, startY;
+
+    controlDiv.addEventListener('mousedown', (e) => {
+      isDragging = true;
+      dragged = false;
+      startX = e.clientX - controlDiv.offsetLeft;
+      startY = e.clientY - controlDiv.offsetTop;
+      e.preventDefault();
+    });
+
+    document.addEventListener('mousemove', (e) => {
+      if (isDragging) {
+        const dx = Math.abs(e.clientX - startX - controlDiv.offsetLeft);
+        const dy = Math.abs(e.clientY - startY - controlDiv.offsetTop);
+        if (dx > 5 || dy > 5) {
+          dragged = true;
+        }
+        controlDiv.style.left = `${e.clientX - startX}px`;
+        controlDiv.style.top = `${e.clientY - startY}px`;
+        controlDiv.style.right = 'auto';
+        controlDiv.style.bottom = 'auto';
+      }
+    });
+
+    document.addEventListener('mouseup', () => {
+      if (isDragging) {
+        isDragging = false;
+      }
+    });
+
+    // 点击切换
+    controlDiv.addEventListener('click', (e) => {
+      if (!dragged) {
+        isScriptRunning = !isScriptRunning;
+        updateAnimation();
+      }
+    });
+  }
+
+  // 新增：更新控制按钮显示
+  function updateControlButton() {
+    // 空函数，因为计数已移除
+  }
+
   // 主函数
   async function initFollowerDisplay() {
     if (!checkLoginStatus()) {
@@ -835,8 +992,12 @@
     }
 
     console.log(
-      "🚀 用户卡片自动显示脚本已启动 (GraphQL批量自动版 v2.32.15 - 兼容2025年10月，支持过滤原因显示，优化翻译插件兼容，API请求并行处理与限流，支持视图可见性动态显示/隐藏)"
+      "🚀 用户卡片自动显示脚本已启动 (GraphQL批量自动版 v2.32.18 - 兼容2025年10月，支持过滤原因显示，优化翻译插件兼容，API请求并行处理与限流，支持视图可见性动态显示/隐藏，添加圆形太极悬浮控制按钮)"
     );
+
+    // 新增：设置follow点击监听和控制按钮
+    setupFollowClickListener();
+    createControlButton();
 
     let isProcessing = false;
     let lastProcessTime = 0;
@@ -853,6 +1014,11 @@
     const observers = new Map(); // 存储每个卡片的IntersectionObserver
 
     async function processVisibleCards(mutations) {
+      if (!isScriptRunning) {
+        console.log('⏸️ 脚本已停止');
+        return;
+      }
+
       const now = Date.now();
       if (isProcessing || now - lastProcessTime < 2000) {
         console.log(`⏸️ 节流跳过处理 (间隔: ${now - lastProcessTime}ms)`);
@@ -983,7 +1149,7 @@
   }
 
   console.log(
-    "🔧 用户卡片自动显示脚本已加载 (GraphQL批量自动版 v2.32.15 - 兼容2025年10月，支持过滤原因显示，优化翻译插件兼容，API请求并行处理与限流，支持视图可见性动态显示/隐藏)"
+    "🔧 用户卡片自动显示脚本已加载 (GraphQL批量自动版 v2.32.18 - 兼容2025年10月，支持过滤原因显示，优化翻译插件兼容，API请求并行处理与限流，支持视图可见性动态显示/隐藏，添加圆形太极悬浮控制按钮)"
   );
 
   if (document.readyState === "loading") {
